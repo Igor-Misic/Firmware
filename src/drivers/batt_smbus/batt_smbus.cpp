@@ -47,8 +47,8 @@
 
 extern "C" __EXPORT int batt_smbus_main(int argc, char *argv[]);
 
-BATT_SMBUS::BATT_SMBUS(SMBus *interface, const char *path) :
-	ScheduledWorkItem(MODULE_NAME, px4::device_bus_to_wq(interface->get_device_id())),
+BATT_SMBUS::BATT_SMBUS(I2CSPIBusOption bus_option, const int bus, SMBus *interface) :
+	I2CSPIDriver(MODULE_NAME, px4::device_bus_to_wq(interface->get_device_id()), bus_option, bus),
 	_interface(interface)
 {
 	battery_status_s new_report = {};
@@ -81,84 +81,16 @@ BATT_SMBUS::~BATT_SMBUS()
 	param_set(param_find("BAT_SOURCE"), &battsource);
 }
 
-int BATT_SMBUS::task_spawn(int argc, char *argv[])
+void BATT_SMBUS::RunImpl()
 {
-	enum BATT_SMBUS_BUS busid = BATT_SMBUS_BUS_ALL;
-
-	int myoptind = 1;
-	int ch;
-	const char *myoptarg = nullptr;
-
-	while ((ch = px4_getopt(argc, argv, "XTRIA", &myoptind, &myoptarg)) != EOF) {
-		switch (ch) {
-		case 'X':
-			busid = BATT_SMBUS_BUS_I2C_EXTERNAL;
-			break;
-
-		case 'T':
-			busid = BATT_SMBUS_BUS_I2C_EXTERNAL1;
-			break;
-
-		case 'R':
-			busid = BATT_SMBUS_BUS_I2C_EXTERNAL2;
-			break;
-
-		case 'I':
-			busid = BATT_SMBUS_BUS_I2C_INTERNAL;
-			break;
-
-		case 'A':
-			busid = BATT_SMBUS_BUS_ALL;
-			break;
-
-		default:
-			print_usage();
-			return PX4_ERROR;
-		}
-	}
-
-	for (unsigned i = 0; i < NUM_BUS_OPTIONS; i++) {
-
-		if (!is_running() && (busid == BATT_SMBUS_BUS_ALL || smbus_bus_options[i].busid == busid)) {
-
-			SMBus *interface = new SMBus(smbus_bus_options[i].busnum, BATT_SMBUS_ADDR);
-			BATT_SMBUS *dev = new BATT_SMBUS(interface, smbus_bus_options[i].devpath);
-
-			int result = dev->get_startup_info();
-
-			if (result != PX4_OK) {
-				delete dev;
-				continue;
-			}
-
-			// Successful read of device type, we've found our battery
-			_object.store(dev);
-			_task_id = task_id_is_work_queue;
-
-			dev->ScheduleOnInterval(BATT_SMBUS_MEASUREMENT_INTERVAL_US);
-
-			return PX4_OK;
-
-		}
-	}
-
-	PX4_WARN("Not found.");
-	return PX4_ERROR;
-}
-
-void BATT_SMBUS::Run()
-{
-	if (should_exit()) {
-		ScheduleClear();
-		exit_and_cleanup();
-		return;
-	}
-
 	// Get the current time.
 	uint64_t now = hrt_absolute_time();
 
 	// Read data from sensor.
 	battery_status_s new_report = {};
+
+	// TODO(hyonlim): this driver should support multiple SMBUS going forward.
+	new_report.id = 1;
 
 	// Set time of reading.
 	new_report.timestamp = now;
@@ -179,13 +111,13 @@ void BATT_SMBUS::Run()
 	// Read current.
 	ret |= _interface->read_word(BATT_SMBUS_CURRENT, result);
 
-	new_report.current_a = (-1.0f * ((float)(*(int16_t *)&result)) / 1000.0f);
+	new_report.current_a = (-1.0f * ((float)(*(int16_t *)&result)) / 1000.0f) * _c_mult;
 	new_report.current_filtered_a = new_report.current_a;
 
 	// Read average current.
 	ret |= _interface->read_word(BATT_SMBUS_AVERAGE_CURRENT, result);
 
-	float average_current = (-1.0f * ((float)(*(int16_t *)&result)) / 1000.0f);
+	float average_current = (-1.0f * ((float)(*(int16_t *)&result)) / 1000.0f) * _c_mult;
 
 	new_report.average_current_a = average_current;
 
@@ -193,43 +125,50 @@ void BATT_SMBUS::Run()
 	// a battery from cutting off while flying with high current near the end of the packs capacity.
 	set_undervoltage_protection(average_current);
 
-	// Read run time to empty.
+	// Read run time to empty (minutes).
 	ret |= _interface->read_word(BATT_SMBUS_RUN_TIME_TO_EMPTY, result);
 	new_report.run_time_to_empty = result;
 
-	// Read average time to empty.
+	// Read average time to empty (minutes).
 	ret |= _interface->read_word(BATT_SMBUS_AVERAGE_TIME_TO_EMPTY, result);
 	new_report.average_time_to_empty = result;
 
 	// Read remaining capacity.
 	ret |= _interface->read_word(BATT_SMBUS_REMAINING_CAPACITY, result);
 
-	// Calculate remaining capacity percent with complementary filter.
-	new_report.remaining = 0.8f * _last_report.remaining + 0.2f * (1.0f - (float)((float)(_batt_capacity - result) /
-			       (float)_batt_capacity));
+	// Calculate total discharged amount in mah.
+	new_report.discharged_mah = _batt_capacity - (float)result * _c_mult;
 
-	// Calculate total discharged amount.
-	new_report.discharged_mah = _batt_startup_capacity - result;
+	// Read Relative SOC.
+	ret |= _interface->read_word(BATT_SMBUS_RELATIVE_SOC, result);
+
+	// Normalize 0.0 to 1.0
+	new_report.remaining = (float)result / 100.0f;
+
+	// Read SOH
+	// TODO(hyonlim): this value can be used for battery_status.warning mavlink message.
+	ret |= _interface->read_word(BATT_SMBUS_STATE_OF_HEALTH, result);
+	new_report.state_of_health = result;
+
+	// Read Max Error
+	ret |= _interface->read_word(BATT_SMBUS_MAX_ERROR, result);
+	new_report.max_error = result;
 
 	// Check if max lifetime voltage delta is greater than allowed.
 	if (_lifetime_max_delta_cell_voltage > BATT_CELL_VOLTAGE_THRESHOLD_FAILED) {
 		new_report.warning = battery_status_s::BATTERY_WARNING_CRITICAL;
-	}
 
-	// Propagate warning state.
-	else {
-		if (new_report.remaining > _low_thr) {
-			new_report.warning = battery_status_s::BATTERY_WARNING_NONE;
+	} else if (new_report.remaining > _low_thr) {
+		new_report.warning = battery_status_s::BATTERY_WARNING_NONE;
 
-		} else if (new_report.remaining > _crit_thr) {
-			new_report.warning = battery_status_s::BATTERY_WARNING_LOW;
+	} else if (new_report.remaining > _crit_thr) {
+		new_report.warning = battery_status_s::BATTERY_WARNING_LOW;
 
-		} else if (new_report.remaining > _emergency_thr) {
-			new_report.warning = battery_status_s::BATTERY_WARNING_CRITICAL;
+	} else if (new_report.remaining > _emergency_thr) {
+		new_report.warning = battery_status_s::BATTERY_WARNING_CRITICAL;
 
-		} else {
-			new_report.warning = battery_status_s::BATTERY_WARNING_EMERGENCY;
-		}
+	} else {
+		new_report.warning = battery_status_s::BATTERY_WARNING_EMERGENCY;
 	}
 
 	// Read battery temperature and covert to Celsius.
@@ -239,6 +178,7 @@ void BATT_SMBUS::Run()
 	new_report.capacity = _batt_capacity;
 	new_report.cycle_count = _cycle_count;
 	new_report.serial_number = _serial_number;
+	new_report.max_cell_voltage_delta = _max_cell_voltage_delta;
 	new_report.cell_count = _cell_count;
 	new_report.voltage_cell_v[0] = _cell_voltages[0];
 	new_report.voltage_cell_v[1] = _cell_voltages[1];
@@ -290,7 +230,7 @@ int BATT_SMBUS::get_cell_voltages()
 
 	for (uint8_t i = 1; i < (sizeof(_cell_voltages) / sizeof(_cell_voltages[0])); i++) {
 		_min_cell_voltage = math::min(_min_cell_voltage, _cell_voltages[i]);
-		max_cell_voltage = math::max(_min_cell_voltage, _cell_voltages[i]);
+		max_cell_voltage = math::max(max_cell_voltage, _cell_voltages[i]);
 	}
 
 	// Calculate the max difference between the min and max cells with complementary filter.
@@ -339,35 +279,34 @@ void BATT_SMBUS::set_undervoltage_protection(float average_current)
 }
 
 //@NOTE: Currently unused, could be helpful for debugging a parameter set though.
-int BATT_SMBUS::dataflash_read(uint16_t &address, void *data)
+int BATT_SMBUS::dataflash_read(uint16_t &address, void *data, const unsigned length)
 {
 	uint8_t code = BATT_SMBUS_MANUFACTURER_BLOCK_ACCESS;
 
-	// address is 2 bytes
 	int result = _interface->block_write(code, &address, 2, true);
 
 	if (result != PX4_OK) {
 		return result;
 	}
 
-	// @NOTE: The data buffer MUST be 32 bytes.
-	result = _interface->block_read(code, data, DATA_BUFFER_SIZE + 2, true);
-
-	// When reading a BATT_SMBUS_MANUFACTURER_BLOCK_ACCESS the first 2 bytes will be the command code
-	// We will remove these since we do not care about the command code.
-	//memcpy(data, &((uint8_t *)data)[2], DATA_BUFFER_SIZE);
+	result = _interface->block_read(code, data, length, true);
 
 	return result;
 }
 
-int BATT_SMBUS::dataflash_write(uint16_t &address, void *data, const unsigned length)
+int BATT_SMBUS::dataflash_write(uint16_t address, void *data, const unsigned length)
 {
 	uint8_t code = BATT_SMBUS_MANUFACTURER_BLOCK_ACCESS;
 
-	uint8_t tx_buf[DATA_BUFFER_SIZE + 2] = {};
+	uint8_t tx_buf[MAC_DATA_BUFFER_SIZE + 2] = {};
 
 	tx_buf[0] = ((uint8_t *)&address)[0];
 	tx_buf[1] = ((uint8_t *)&address)[1];
+
+	if (length > MAC_DATA_BUFFER_SIZE) {
+		return PX4_ERROR;
+	}
+
 	memcpy(&tx_buf[2], data, length);
 
 	// code (1), byte_count (1), addr(2), data(32) + pec
@@ -379,8 +318,15 @@ int BATT_SMBUS::dataflash_write(uint16_t &address, void *data, const unsigned le
 int BATT_SMBUS::get_startup_info()
 {
 	int result = 0;
+
 	// The name field is 21 characters, add one for null terminator.
 	const unsigned name_length = 22;
+
+	// Read battery threshold params on startup.
+	param_get(param_find("BAT_CRIT_THR"), &_crit_thr);
+	param_get(param_find("BAT_LOW_THR"), &_low_thr);
+	param_get(param_find("BAT_EMERGEN_THR"), &_emergency_thr);
+	param_get(param_find("BAT_C_MULT"), &_c_mult);
 
 	// Try and get battery SBS info.
 	if (_manufacturer_name == nullptr) {
@@ -388,7 +334,7 @@ int BATT_SMBUS::get_startup_info()
 		result = manufacturer_name((uint8_t *)man_name, sizeof(man_name));
 
 		if (result != PX4_OK) {
-			PX4_WARN("Failed to get manufacturer name");
+			PX4_DEBUG("Failed to get manufacturer name");
 			return PX4_ERROR;
 		}
 
@@ -409,9 +355,9 @@ int BATT_SMBUS::get_startup_info()
 
 	if (!result) {
 		_serial_number = serial_num;
-		_batt_startup_capacity = remaining_cap;
+		_batt_startup_capacity = (uint16_t)((float)remaining_cap * _c_mult);
 		_cycle_count = cycle_count;
-		_batt_capacity = full_cap;
+		_batt_capacity = (uint16_t)((float)full_cap * _c_mult);
 	}
 
 	if (lifetime_data_flush() == PX4_OK) {
@@ -428,11 +374,6 @@ int BATT_SMBUS::get_startup_info()
 	} else {
 		PX4_WARN("Failed to flush lifetime data");
 	}
-
-	// Read battery threshold params on startup.
-	param_get(param_find("BAT_CRIT_THR"), &_crit_thr);
-	param_get(param_find("BAT_LOW_THR"), &_low_thr);
-	param_get(param_find("BAT_EMERGEN_THR"), &_emergency_thr);
 
 	return result;
 }
@@ -475,13 +416,6 @@ int BATT_SMBUS::manufacturer_name(uint8_t *man_name, const uint8_t length)
 	return result;
 }
 
-int BATT_SMBUS::print_status()
-{
-	PX4_INFO("Running");
-	print_message(_last_report);
-	return 0;
-}
-
 int BATT_SMBUS::manufacturer_read(const uint16_t cmd_code, void *data, const unsigned length)
 {
 	uint8_t code = BATT_SMBUS_MANUFACTURER_BLOCK_ACCESS;
@@ -496,9 +430,8 @@ int BATT_SMBUS::manufacturer_read(const uint16_t cmd_code, void *data, const uns
 		return result;
 	}
 
-	// returns the 2 bytes of addr + data[]
-	result = _interface->block_read(code, data, length + 2, true);
-	memcpy(data, &((uint8_t *)data)[2], length);
+	result = _interface->block_read(code, data, length, true);
+	memmove(data, &((uint8_t *)data)[2], length - 2); // remove the address bytes
 
 	return result;
 }
@@ -511,7 +444,7 @@ int BATT_SMBUS::manufacturer_write(const uint16_t cmd_code, void *data, const un
 	address[0] = ((uint8_t *)&cmd_code)[0];
 	address[1] = ((uint8_t *)&cmd_code)[1];
 
-	uint8_t tx_buf[DATA_BUFFER_SIZE + 2] = {};
+	uint8_t tx_buf[MAC_DATA_BUFFER_SIZE + 2] = {};
 	memcpy(tx_buf, address, 2);
 
 	if (data != nullptr) {
@@ -552,10 +485,10 @@ int BATT_SMBUS::lifetime_data_flush()
 
 int BATT_SMBUS::lifetime_read_block_one()
 {
+	const int buffer_size = 32 + 2; // 32 bytes of data and 2 bytes of address
+	uint8_t lifetime_block_one[buffer_size] = {};
 
-	uint8_t lifetime_block_one[32] = {};
-
-	if (PX4_OK != manufacturer_read(BATT_SMBUS_LIFETIME_BLOCK_ONE, lifetime_block_one, 32)) {
+	if (PX4_OK != manufacturer_read(BATT_SMBUS_LIFETIME_BLOCK_ONE, lifetime_block_one, buffer_size)) {
 		PX4_INFO("Failed to read lifetime block 1.");
 		return PX4_ERROR;
 	}
@@ -568,96 +501,7 @@ int BATT_SMBUS::lifetime_read_block_one()
 	return PX4_OK;
 }
 
-int BATT_SMBUS::custom_command(int argc, char *argv[])
-{
-	const char *input = argv[0];
-	uint8_t man_name[22];
-	int result = 0;
-
-	if (!is_running()) {
-		PX4_ERR("not running");
-		return -1;
-	}
-
-	BATT_SMBUS *obj = get_instance();
-
-	if (!strcmp(input, "man_info")) {
-
-		result = obj->manufacturer_name(man_name, sizeof(man_name));
-		PX4_INFO("The manufacturer name: %s", man_name);
-
-		result = obj->manufacture_date();
-		PX4_INFO("The manufacturer date: %d", result);
-
-		uint16_t serial_num = 0;
-		serial_num = obj->get_serial_number();
-		PX4_INFO("The serial number: %d", serial_num);
-
-		return 0;
-	}
-
-	if (!strcmp(input, "unseal")) {
-		obj->unseal();
-		return 0;
-	}
-
-	if (!strcmp(input, "seal")) {
-		obj->seal();
-		return 0;
-	}
-
-	if (!strcmp(input, "suspend")) {
-		obj->suspend();
-		return 0;
-	}
-
-	if (!strcmp(input, "resume")) {
-		obj->resume();
-		return 0;
-	}
-
-	if (!strcmp(input, "serial_num")) {
-		uint16_t serial_num = obj->get_serial_number();
-		PX4_INFO("Serial number: %d", serial_num);
-		return 0;
-	}
-
-	if (!strcmp(input, "write_flash")) {
-		if (argc >= 3) {
-			uint16_t address = atoi(argv[1]);
-			unsigned length = atoi(argv[2]);
-			uint8_t tx_buf[32] = {};
-
-			if (length > 32) {
-				PX4_WARN("Data length out of range: Max 32 bytes");
-				return 1;
-			}
-
-			// Data needs to be fed in 1 byte (0x01) at a time.
-			for (unsigned i = 0; i < length; i++) {
-				if ((unsigned)argc <= 3 + i) {
-					tx_buf[i] = atoi(argv[3 + i]);
-				}
-			}
-
-			if (PX4_OK != obj->dataflash_write(address, tx_buf, length)) {
-				PX4_INFO("Dataflash write failed: %d", address);
-				px4_usleep(100000);
-				return 1;
-
-			} else {
-				px4_usleep(100000);
-				return 0;
-			}
-		}
-	}
-
-	print_usage();
-
-	return PX4_ERROR;
-}
-
-int BATT_SMBUS::print_usage()
+void BATT_SMBUS::print_usage()
 {
 	PRINT_MODULE_DESCRIPTION(
 		R"DESCR_STR(
@@ -673,11 +517,8 @@ $ batt_smbus -X write_flash 19069 2 27 0
 	PRINT_MODULE_USAGE_NAME("batt_smbus", "driver");
 
 	PRINT_MODULE_USAGE_COMMAND("start");
-	PRINT_MODULE_USAGE_PARAM_FLAG('X', "BATT_SMBUS_BUS_I2C_EXTERNAL", true);
-	PRINT_MODULE_USAGE_PARAM_FLAG('T', "BATT_SMBUS_BUS_I2C_EXTERNAL1", true);
-	PRINT_MODULE_USAGE_PARAM_FLAG('R', "BATT_SMBUS_BUS_I2C_EXTERNAL2", true);
-	PRINT_MODULE_USAGE_PARAM_FLAG('I', "BATT_SMBUS_BUS_I2C_INTERNAL", true);
-	PRINT_MODULE_USAGE_PARAM_FLAG('A', "BATT_SMBUS_BUS_ALL", true);
+	PRINT_MODULE_USAGE_PARAMS_I2C_SPI_DRIVER(true, false);
+	PRINT_MODULE_USAGE_PARAMS_I2C_ADDRESS(0x0B);
 
 	PRINT_MODULE_USAGE_COMMAND_DESCR("man_info", "Prints manufacturer info.");
 	PRINT_MODULE_USAGE_COMMAND_DESCR("unseal", "Unseals the devices flash memory to enable write_flash commands.");
@@ -690,11 +531,151 @@ $ batt_smbus -X write_flash 19069 2 27 0
 	PRINT_MODULE_USAGE_ARG("number of bytes", "Number of bytes to send.", true);
 	PRINT_MODULE_USAGE_ARG("data[0]...data[n]", "One byte of data at a time separated by spaces.", true);
 	PRINT_MODULE_USAGE_DEFAULT_COMMANDS();
-
-	return PX4_OK;
 }
 
-int batt_smbus_main(int argc, char *argv[])
+I2CSPIDriverBase *BATT_SMBUS::instantiate(const BusCLIArguments &cli, const BusInstanceIterator &iterator,
+				      int runtime_instance)
 {
-	return BATT_SMBUS::main(argc, argv);
+	SMBus *interface = new SMBus(iterator.bus(), cli.i2c_address);
+	if (interface == nullptr) {
+		PX4_ERR("alloc failed");
+		return nullptr;
+	}
+	BATT_SMBUS *instance = new BATT_SMBUS(iterator.configuredBusOption(), iterator.bus(), interface);
+
+	if (instance == nullptr) {
+		PX4_ERR("alloc failed");
+		return nullptr;
+	}
+
+	int result = instance->get_startup_info();
+
+	if (result != PX4_OK) {
+		delete instance;
+		return nullptr;
+	}
+
+	instance->ScheduleOnInterval(BATT_SMBUS_MEASUREMENT_INTERVAL_US);
+
+	return instance;
+}
+
+void
+BATT_SMBUS::custom_method(const BusCLIArguments &cli)
+{
+	switch(cli.custom1) {
+		case 1: {
+			uint8_t man_name[22];
+			int result = manufacturer_name(man_name, sizeof(man_name));
+			PX4_INFO("The manufacturer name: %s", man_name);
+
+			result = manufacture_date();
+			PX4_INFO("The manufacturer date: %d", result);
+
+			uint16_t serial_num = 0;
+			serial_num = get_serial_number();
+			PX4_INFO("The serial number: %d", serial_num);
+		}
+			break;
+		case 2:
+			unseal();
+			break;
+		case 3:
+			seal();
+			break;
+		case 4:
+			suspend();
+			break;
+		case 5:
+			resume();
+			break;
+		case 6:
+			if (cli.custom_data) {
+				unsigned address = cli.custom2;
+				uint8_t *tx_buf = (uint8_t*)cli.custom_data;
+				unsigned length = tx_buf[0];
+
+				if (PX4_OK != dataflash_write(address, tx_buf+1, length)) {
+					PX4_ERR("Dataflash write failed: %d", address);
+				}
+				px4_usleep(100000);
+			}
+			break;
+	}
+}
+
+extern "C" __EXPORT int batt_smbus_main(int argc, char *argv[])
+{
+	using ThisDriver = BATT_SMBUS;
+	BusCLIArguments cli{true, false};
+	cli.default_i2c_frequency = 100000;
+	cli.i2c_address = BATT_SMBUS_ADDR;
+
+	const char *verb = cli.parseDefaultArguments(argc, argv);
+	if (!verb) {
+		ThisDriver::print_usage();
+		return -1;
+	}
+
+	BusInstanceIterator iterator(MODULE_NAME, cli, DRV_BAT_DEVTYPE_SMBUS);
+
+	if (!strcmp(verb, "start")) {
+		return ThisDriver::module_start(cli, iterator);
+	}
+
+	if (!strcmp(verb, "stop")) {
+		return ThisDriver::module_stop(iterator);
+	}
+
+	if (!strcmp(verb, "status")) {
+		return ThisDriver::module_status(iterator);
+	}
+
+	if (!strcmp(verb, "man_info")) {
+		cli.custom1 = 1;
+		return ThisDriver::module_custom_method(cli, iterator, false);
+	}
+	if (!strcmp(verb, "unseal")) {
+		cli.custom1 = 2;
+		return ThisDriver::module_custom_method(cli, iterator);
+	}
+	if (!strcmp(verb, "seal")) {
+		cli.custom1 = 3;
+		return ThisDriver::module_custom_method(cli, iterator);
+	}
+	if (!strcmp(verb, "suspend")) {
+		cli.custom1 = 4;
+		return ThisDriver::module_custom_method(cli, iterator);
+	}
+	if (!strcmp(verb, "resume")) {
+		cli.custom1 = 5;
+		return ThisDriver::module_custom_method(cli, iterator);
+	}
+	if (!strcmp(verb, "write_flash")) {
+		cli.custom1 = 6;
+		if (argc >= 3) {
+			uint16_t address = atoi(argv[1]);
+			unsigned length = atoi(argv[2]);
+			uint8_t tx_buf[33];
+			cli.custom_data = &tx_buf;
+
+			if (length > 32) {
+				PX4_WARN("Data length out of range: Max 32 bytes");
+				return 1;
+			}
+
+			tx_buf[0] = length;
+			// Data needs to be fed in 1 byte (0x01) at a time.
+			for (unsigned i = 0; i < length; i++) {
+				if ((unsigned)argc <= 3 + i) {
+					tx_buf[i+1] = atoi(argv[3 + i]);
+				}
+			}
+			cli.custom2 = address;
+			return ThisDriver::module_custom_method(cli, iterator);
+		}
+	}
+
+	ThisDriver::print_usage();
+	return -1;
 }

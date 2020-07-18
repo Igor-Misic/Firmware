@@ -87,12 +87,10 @@ public:
 	/** @see ModuleBase */
 	static int print_usage(const char *reason = nullptr);
 
-	/* run the main loop */
+private:
+
 	void Run() override;
 
-	int print_status() override;
-
-private:
 	static constexpr int MAX_NUM_AIRSPEED_SENSORS = 3; /**< Support max 3 airspeed sensors */
 	enum airspeed_index {
 		DISABLED_INDEX = -1,
@@ -178,12 +176,12 @@ private:
 
 AirspeedModule::AirspeedModule():
 	ModuleParams(nullptr),
-	ScheduledWorkItem(MODULE_NAME, px4::wq_configurations::att_pos_ctrl)
+	ScheduledWorkItem(MODULE_NAME, px4::wq_configurations::nav_and_controllers)
 {
 	// initialise parameters
 	update_params();
 
-	_perf_elapsed = perf_alloc_once(PC_ELAPSED, "airspeed_selector elapsed");
+	_perf_elapsed = perf_alloc(PC_ELAPSED, MODULE_NAME": elapsed");
 }
 
 AirspeedModule::~AirspeedModule()
@@ -191,7 +189,6 @@ AirspeedModule::~AirspeedModule()
 	ScheduleClear();
 
 	perf_free(_perf_elapsed);
-
 }
 
 int
@@ -223,12 +220,12 @@ AirspeedModule::init()
 		_valid_airspeed_index = math::min(_param_airspeed_primary_index.get(), _number_of_airspeed_sensors);
 
 		if (_number_of_airspeed_sensors == 0) {
-			mavlink_and_console_log_info(&_mavlink_log_pub,
-						     "No airspeed sensor detected. Switch to non-airspeed mode.");
+			mavlink_log_info(&_mavlink_log_pub,
+					 "No airspeed sensor detected. Switch to non-airspeed mode.");
 
 		} else {
-			mavlink_and_console_log_info(&_mavlink_log_pub,
-						     "Primary airspeed index bigger than number connected sensors. Take last sensor.");
+			mavlink_log_info(&_mavlink_log_pub,
+					 "Primary airspeed index bigger than number connected sensors. Take last sensor.");
 		}
 
 	} else {
@@ -266,6 +263,14 @@ AirspeedModule::check_for_connected_airspeed_sensors()
 void
 AirspeedModule::Run()
 {
+	_time_now_usec = hrt_absolute_time(); //hrt time of the current cycle
+
+	/* do not run the airspeed selector until 2s after system boot, as data from airspeed sensor
+	and estimator may not be valid yet*/
+	if (_time_now_usec < 2_s) {
+		return;
+	}
+
 	perf_begin(_perf_elapsed);
 
 	if (!_initialized) {
@@ -279,7 +284,7 @@ AirspeedModule::Run()
 		update_params();
 	}
 
-	_time_now_usec = hrt_absolute_time(); //hrt time of the current cycle
+
 
 	bool armed = (_vehicle_status.arming_state == vehicle_status_s::ARMING_STATE_ARMED);
 
@@ -394,7 +399,7 @@ void AirspeedModule::update_params()
 				-1.0f);  // set it to a negative value to start estimation inside wind estimator
 
 		} else {
-			mavlink_and_console_log_info(&_mavlink_log_pub, "Airspeed: can't estimate scale as no valid sensor.");
+			mavlink_log_info(&_mavlink_log_pub, "Airspeed: can't estimate scale as no valid sensor.");
 			_param_west_scale_estimation_on.set(0); // reset this param to 0 as estimation was not turned on
 			_param_west_scale_estimation_on.commit_no_notification();
 		}
@@ -408,11 +413,11 @@ void AirspeedModule::update_params()
 			_param_west_airspeed_scale.commit_no_notification();
 			_airspeed_validator[_valid_airspeed_index - 1].set_airspeed_scale_manual(_param_west_airspeed_scale.get());
 
-			mavlink_and_console_log_info(&_mavlink_log_pub, "Airspeed: estimated scale (ASPD_ASPD_SCALE): %0.2f",
-						     (double)_airspeed_validator[_valid_airspeed_index - 1].get_EAS_scale());
+			mavlink_log_info(&_mavlink_log_pub, "Airspeed: estimated scale (ASPD_ASPD_SCALE): %0.2f",
+					 (double)_airspeed_validator[_valid_airspeed_index - 1].get_EAS_scale());
 
 		} else {
-			mavlink_and_console_log_info(&_mavlink_log_pub, "Airspeed: can't estimate scale as no valid sensor.");
+			mavlink_log_info(&_mavlink_log_pub, "Airspeed: can't estimate scale as no valid sensor.");
 		}
 	}
 
@@ -588,19 +593,6 @@ int AirspeedModule::custom_command(int argc, char *argv[])
 	}
 
 	return print_usage("unknown command");
-}
-
-int AirspeedModule::print_status()
-{
-	perf_print_counter(_perf_elapsed);
-
-	int instance = 0;
-	uORB::SubscriptionData<airspeed_validated_s> est{ORB_ID(airspeed_validated), (uint8_t)instance};
-	est.update();
-	PX4_INFO("Number of airspeed sensors: %i", _number_of_airspeed_sensors);
-	print_message(est.get());
-
-	return 0;
 }
 
 int AirspeedModule::print_usage(const char *reason)

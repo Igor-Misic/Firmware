@@ -220,7 +220,7 @@ static int vmount_thread_main(int argc, char *argv[])
 	ControlData *control_data = nullptr;
 	g_thread_data = &thread_data;
 
-	int last_active = 0;
+	int last_active = -1;
 
 	while (!thread_should_exit) {
 
@@ -357,7 +357,12 @@ static int vmount_thread_main(int argc, char *argv[])
 				break;
 			}
 
-			thread_data.output_obj->publish();
+			//only publish the mount orientation if the mode is not mavlink
+			//if the gimbal speaks mavlink it publishes its own orientation
+			if (params.mnt_mode_out != 1) { // 1 = MAVLINK
+				thread_data.output_obj->publish();
+			}
+
 
 		} else {
 			//wait for parameter changes. We still need to wake up regularily to check for thread exit requests
@@ -390,7 +395,7 @@ static int vmount_thread_main(int argc, char *argv[])
 
 				thread_data.input_objs_len = 0;
 
-				last_active = 0;
+				last_active = -1;
 
 				if (thread_data.output_obj) {
 					delete (thread_data.output_obj);
@@ -596,7 +601,7 @@ static void usage()
 Mount (Gimbal) control driver. It maps several different input methods (eg. RC or MAVLink) to a configured
 output (eg. AUX channels or MAVLink).
 
-Documentation how to use it is on the [gimbal_control](https://dev.px4.io/en/advanced/gimbal_control.html) page.
+Documentation how to use it is on the [gimbal_control](https://dev.px4.io/master/en/advanced/gimbal_control.html) page.
 
 ### Implementation
 Each method is implemented in its own class, and there is a common base class for inputs and outputs.

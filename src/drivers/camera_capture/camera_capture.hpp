@@ -50,7 +50,6 @@
 #include <px4_platform_common/workqueue.h>
 #include <px4_platform_common/px4_work_queue/ScheduledWorkItem.hpp>
 #include <uORB/Publication.hpp>
-#include <uORB/PublicationQueued.hpp>
 #include <uORB/Subscription.hpp>
 #include <uORB/topics/camera_trigger.h>
 #include <uORB/topics/vehicle_command.h>
@@ -149,5 +148,3 @@ private:
 	static void		publish_trigger_trampoline(void *arg);
 
 };
-
-struct work_s CameraCapture::_work_publisher;

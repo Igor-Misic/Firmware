@@ -22,10 +22,10 @@ void BlockLocalPositionEstimator::flowInit()
 
 	// if finished
 	if (_flowQStats.getCount() > REQ_FLOW_INIT_COUNT) {
-		mavlink_and_console_log_info(&mavlink_log_pub, "[lpe] flow init: "
-					     "quality %d std %d",
-					     int(_flowQStats.getMean()(0)),
-					     int(_flowQStats.getStdDev()(0)));
+		mavlink_log_info(&mavlink_log_pub, "[lpe] flow init: "
+				 "quality %d std %d",
+				 int(_flowQStats.getMean()(0)),
+				 int(_flowQStats.getStdDev()(0)));
 		_sensorTimeout &= ~SENSOR_FLOW;
 		_sensorFault &= ~SENSOR_FLOW;
 	}
@@ -172,10 +172,10 @@ void BlockLocalPositionEstimator::flowCorrect()
 	Matrix<float, n_y_flow, n_y_flow> S = C * m_P * C.transpose() + R;
 
 	// publish innovations
-	_pub_innov.get().flow_innov[0] = r(0);
-	_pub_innov.get().flow_innov[1] = r(1);
-	_pub_innov.get().flow_innov_var[0] = S(0, 0);
-	_pub_innov.get().flow_innov_var[1] = S(1, 1);
+	_pub_innov.get().flow[0] = r(0);
+	_pub_innov.get().flow[1] = r(1);
+	_pub_innov_var.get().flow[0] = S(0, 0);
+	_pub_innov_var.get().flow[1] = S(1, 1);
 
 	// residual covariance, (inverse)
 	Matrix<float, n_y_flow, n_y_flow> S_I = inv<float, n_y_flow>(S);
@@ -185,13 +185,13 @@ void BlockLocalPositionEstimator::flowCorrect()
 
 	if (beta > BETA_TABLE[n_y_flow]) {
 		if (!(_sensorFault & SENSOR_FLOW)) {
-			mavlink_and_console_log_info(&mavlink_log_pub, "[lpe] flow fault,  beta %5.2f", double(beta));
+			mavlink_log_info(&mavlink_log_pub, "[lpe] flow fault,  beta %5.2f", double(beta));
 			_sensorFault |= SENSOR_FLOW;
 		}
 
 	} else if (_sensorFault & SENSOR_FLOW) {
 		_sensorFault &= ~SENSOR_FLOW;
-		mavlink_and_console_log_info(&mavlink_log_pub, "[lpe] flow OK");
+		mavlink_log_info(&mavlink_log_pub, "[lpe] flow OK");
 	}
 
 	if (!(_sensorFault & SENSOR_FLOW)) {

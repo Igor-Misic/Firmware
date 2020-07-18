@@ -127,8 +127,6 @@ public:
 	/** @see ModuleBase */
 	static int print_usage(const char *reason = nullptr);
 
-	void Run() override;
-
 	/** @see ModuleBase::print_status() */
 	int print_status() override;
 
@@ -165,6 +163,9 @@ public:
 	bool telemetryEnabled() const { return _telemetry != nullptr; }
 
 private:
+
+	void Run() override;
+
 	static constexpr uint16_t DISARMED_VALUE = 0;
 
 	enum class DShotConfig {
@@ -603,6 +604,7 @@ void DShotOutput::handleNewTelemetryData(int motor_index, const DShotTelemetry::
 		++esc_status.counter;
 		// FIXME: mark all ESC's as online, otherwise commander complains even for a single dropout
 		esc_status.esc_online_flags = (1 << esc_status.esc_count) - 1;
+		esc_status.esc_armed_flags = (1 << esc_status.esc_count) - 1;
 
 		_telemetry->esc_status_pub.update();
 
@@ -1255,6 +1257,9 @@ DShotOutput::module_new_mode(PortMode new_mode)
 		/* select 4-pin PWM mode */
 		mode = DShotOutput::MODE_4PWM;
 #endif
+#if defined(BOARD_HAS_PWM) && BOARD_HAS_PWM == 5
+		mode = DShotOutput::MODE_5PWM;
+#endif
 #if defined(BOARD_HAS_PWM) && BOARD_HAS_PWM == 6
 		mode = DShotOutput::MODE_6PWM;
 #endif
@@ -1284,6 +1289,9 @@ DShotOutput::module_new_mode(PortMode new_mode)
 		/* select 6-pin PWM mode */
 		mode = DShotOutput::MODE_6PWM;
 		break;
+#endif
+
+#if defined(BOARD_HAS_PWM) && BOARD_HAS_PWM >= 5
 
 	case PORT_PWM5:
 		/* select 5-pin PWM mode */
@@ -1299,6 +1307,9 @@ DShotOutput::module_new_mode(PortMode new_mode)
 		break;
 
 #  endif
+#endif
+
+#if defined(BOARD_HAS_PWM) && BOARD_HAS_PWM >= 4
 
 	case PORT_PWM4:
 		/* select 4-pin PWM mode */
@@ -1473,6 +1484,9 @@ int DShotOutput::custom_command(int argc, char *argv[])
 
 	} else if (!strcmp(verb, "mode_pwm6")) {
 		new_mode = PORT_PWM6;
+
+#endif
+#if defined(BOARD_HAS_PWM) && BOARD_HAS_PWM >= 5
 
 	} else if (!strcmp(verb, "mode_pwm5")) {
 		new_mode = PORT_PWM5;

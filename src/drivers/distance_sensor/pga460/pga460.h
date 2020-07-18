@@ -268,11 +268,6 @@ public:
 	void print_diagnostics(const uint8_t diagnostic_byte);
 
 	/**
-	 * Diagnostics - print some basic information about the driver.
-	 */
-	int print_status() override;
-
-	/**
 	 * @brief Reads the threshold registers.
 	 * @return Returns true if the threshold registers are set to default
 	 */
@@ -387,7 +382,7 @@ private:
 	/** @orb_advert_t orb_advert_t uORB advertisement topic. */
 	orb_advert_t _distance_sensor_topic{nullptr};
 
-	/** @param _fd Returns the file descriptor from px4_open(). */
+	/** @param _fd Returns the file descriptor from open(). */
 	int _fd{-1};
 
 	/** @param _port Stores the port name. */

@@ -50,7 +50,6 @@
 #include <px4_platform_common/module_params.h>
 #include <systemlib/mavlink_log.h>
 #include <uORB/Publication.hpp>
-#include <uORB/PublicationQueued.hpp>
 #include <uORB/Subscription.hpp>
 #include <uORB/topics/collision_constraints.h>
 #include <uORB/topics/distance_sensor.h>
@@ -65,11 +64,10 @@ class CollisionPrevention : public ModuleParams
 {
 public:
 	CollisionPrevention(ModuleParams *parent);
-
-	virtual ~CollisionPrevention();
+	~CollisionPrevention() override = default;
 
 	/**
-	 * Returs true if Collision Prevention is running
+	 * Returns true if Collision Prevention is running
 	 */
 	bool is_active();
 
@@ -86,6 +84,7 @@ public:
 protected:
 
 	obstacle_distance_s _obstacle_map_body_frame {};
+	bool _data_fov[sizeof(_obstacle_map_body_frame.distances) / sizeof(_obstacle_map_body_frame.distances[0])];
 	uint64_t _data_timestamps[sizeof(_obstacle_map_body_frame.distances) / sizeof(_obstacle_map_body_frame.distances[0])];
 	uint16_t _data_maxranges[sizeof(_obstacle_map_body_frame.distances) / sizeof(
 										    _obstacle_map_body_frame.distances[0])]; /**< in cm */
@@ -138,7 +137,6 @@ private:
 	static constexpr uint64_t RANGE_STREAM_TIMEOUT_US{500_ms};
 	static constexpr uint64_t TIMEOUT_HOLD_US{5_s};
 
-	hrt_abstime	_last_collision_warning{0};
 	hrt_abstime	_last_timeout_warning{0};
 	hrt_abstime	_time_activated{0};
 

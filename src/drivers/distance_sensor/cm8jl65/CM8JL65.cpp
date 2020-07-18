@@ -33,6 +33,8 @@
 
 #include "CM8JL65.hpp"
 
+#include <fcntl.h>
+
 static constexpr unsigned char crc_msb_vector[] = {
 	0x00, 0xC1, 0x81, 0x40, 0x01, 0xC0, 0x80, 0x41, 0x01, 0xC0, 0x80, 0x41,
 	0x00, 0xC1, 0x81, 0x40, 0x01, 0xC0, 0x80, 0x41, 0x00, 0xC1, 0x81, 0x40,
@@ -84,7 +86,7 @@ static constexpr unsigned char crc_lsb_vector[] = {
 };
 
 CM8JL65::CM8JL65(const char *port, uint8_t rotation) :
-	ScheduledWorkItem(MODULE_NAME, px4::wq_configurations::hp_default),
+	ScheduledWorkItem(MODULE_NAME, px4::serial_port_to_wq(port)),
 	_px4_rangefinder(0 /* TODO: device ids */, ORB_PRIO_DEFAULT, rotation)
 {
 	// Store the port name.
@@ -325,8 +327,6 @@ CM8JL65::print_info()
 {
 	perf_print_counter(_sample_perf);
 	perf_print_counter(_comms_errors);
-
-	_px4_rangefinder.print_status();
 }
 
 void

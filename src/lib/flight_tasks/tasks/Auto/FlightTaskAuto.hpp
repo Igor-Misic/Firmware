@@ -46,7 +46,13 @@
 #include <uORB/topics/manual_control_setpoint.h>
 #include <uORB/topics/vehicle_status.h>
 #include <lib/ecl/geo/geo.h>
-#include <ObstacleAvoidance.hpp>
+
+// TODO: make this switchable in the board config, like a module
+#if CONSTRAINED_FLASH
+#include <lib/avoidance/ObstacleAvoidance_dummy.hpp>
+#else
+#include <lib/avoidance/ObstacleAvoidance.hpp>
+#endif
 
 /**
  * This enum has to agree with position_setpoint_s type definition
@@ -94,13 +100,14 @@ protected:
 
 	matrix::Vector3f _prev_prev_wp{}; /**< Pre-previous waypoint (local frame). This will be used for smoothing trajectories -> not used yet. */
 	matrix::Vector3f _prev_wp{}; /**< Previous waypoint  (local frame). If no previous triplet is available, the prev_wp is set to current position. */
+	bool _prev_was_valid{false};
 	matrix::Vector3f _target{}; /**< Target waypoint  (local frame).*/
 	matrix::Vector3f _next_wp{}; /**< The next waypoint after target (local frame). If no next setpoint is available, next is set to target. */
+	bool _next_was_valid{false};
 	float _mc_cruise_speed{0.0f}; /**< Requested cruise speed. If not valid, default cruise speed is used. */
 	WaypointType _type{WaypointType::idle}; /**< Type of current target triplet. */
 
 	uORB::SubscriptionData<home_position_s>			_sub_home_position{ORB_ID(home_position)};
-	uORB::SubscriptionData<manual_control_setpoint_s>	_sub_manual_control_setpoint{ORB_ID(manual_control_setpoint)};
 	uORB::SubscriptionData<vehicle_status_s>		_sub_vehicle_status{ORB_ID(vehicle_status)};
 
 	State _current_state{State::none};
@@ -114,7 +121,6 @@ protected:
 
 	DEFINE_PARAMETERS_CUSTOM_PARENT(FlightTask,
 					(ParamFloat<px4::params::MPC_XY_CRUISE>) _param_mpc_xy_cruise,
-					(ParamFloat<px4::params::MPC_CRUISE_90>) _param_mpc_cruise_90, // speed at corner when angle is 90 degrees move to line
 					(ParamFloat<px4::params::NAV_MC_ALT_RAD>)
 					_param_nav_mc_alt_rad, //vertical acceptance radius at which waypoints are updated
 					(ParamInt<px4::params::MPC_YAW_MODE>) _param_mpc_yaw_mode, // defines how heading is executed,

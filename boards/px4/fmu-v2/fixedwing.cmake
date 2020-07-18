@@ -21,19 +21,21 @@ px4_add_board(
 		#barometer # all available barometer drivers
 		barometer/ms5611
 		#batt_smbus
-		#camera_capture
-		#camera_trigger
+		camera_capture
+		camera_trigger
 		differential_pressure # all available differential pressure drivers
-		distance_sensor # all available distance sensor drivers
+		#distance_sensor # all available distance sensor drivers
+		distance_sensor/ll40ls
+		distance_sensor/sf0x
 		gps
 		imu/l3gd20
 		imu/lsm303d
-		imu/mpu6000
-		#imu/mpu9250
+		imu/invensense/mpu6000
+		#imu/invensense/mpu9250
 		lights/rgbled
 		#magnetometer # all available magnetometer drivers
 		magnetometer/hmc5883
-		px4fmu
+		pwm_out
 		px4io
 		#telemetry # all available telemetry drivers
 		telemetry/iridiumsbd
@@ -54,11 +56,12 @@ px4_add_board(
 		logger
 		mavlink
 		navigator
+		rc_update
 		sensors
-		vmount
+		temperature_compensation
+		#vmount
 	SYSTEMCMDS
 		#bl_update
-		#config
 		#dumpfile
 		#esc_calib
 		hardfault_log

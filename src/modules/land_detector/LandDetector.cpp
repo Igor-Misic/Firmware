@@ -47,7 +47,7 @@ namespace land_detector
 
 LandDetector::LandDetector() :
 	ModuleParams(nullptr),
-	ScheduledWorkItem(MODULE_NAME, px4::wq_configurations::att_pos_ctrl)
+	ScheduledWorkItem(MODULE_NAME, px4::wq_configurations::nav_and_controllers)
 {}
 
 LandDetector::~LandDetector()
@@ -145,13 +145,11 @@ void LandDetector::_update_params()
 
 void LandDetector::_update_state()
 {
-	/* when we are landed we also have ground contact for sure but only one output state can be true at a particular time
-	 * with higher priority for landed */
 	const hrt_abstime now_us = hrt_absolute_time();
 	_freefall_hysteresis.set_state_and_update(_get_freefall_state(), now_us);
-	_landed_hysteresis.set_state_and_update(_get_landed_state(), now_us);
-	_maybe_landed_hysteresis.set_state_and_update(_get_maybe_landed_state(), now_us);
 	_ground_contact_hysteresis.set_state_and_update(_get_ground_contact_state(), now_us);
+	_maybe_landed_hysteresis.set_state_and_update(_get_maybe_landed_state(), now_us);
+	_landed_hysteresis.set_state_and_update(_get_landed_state(), now_us);
 	_ground_effect_hysteresis.set_state_and_update(_get_ground_effect_state(), now_us);
 }
 

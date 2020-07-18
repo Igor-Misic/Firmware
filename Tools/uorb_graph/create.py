@@ -1,4 +1,4 @@
-#! /usr/bin/env python
+#! /usr/bin/env python3
 
 from __future__ import print_function
 
@@ -8,7 +8,7 @@ import codecs
 import re
 import colorsys
 import json
-
+import sys
 
 
 parser = argparse.ArgumentParser(
@@ -220,8 +220,6 @@ class Graph(object):
     #   (the expectation is that the previous matching ORB_ID() will be passed
     #   to this, so that we can ignore it)
         special_cases_sub = [
-    ('sensors', r'voted_sensors_update\.cpp$', r'\binitSensorClass\b\(([^,)]+)', r'^meta$'),
-    ('mavlink', r'.*', r'\badd_orb_subscription\b\(([^,)]+)', r'^_topic$'),
     ('listener', r'.*', None, r'^(id)$'),
     ('logger', r'.*', None, r'^(topic|sub\.metadata|_polling_topic_meta)$'),
 
@@ -239,15 +237,6 @@ class Graph(object):
 
         special_cases_pub = [
     ('replay', r'Replay\.cpp$', None, r'^sub\.orb_meta$'),
-    ('fw_pos_control_l1', r'FixedwingPositionControl\.cpp$', r'\b_attitude_setpoint_id=([^,)]+)', r'^_attitude_setpoint_id$'),
-
-    ('mc_pos_control', r'mc_pos_control_main\.cpp$', r'\b_attitude_setpoint_id=([^,)]+)', r'^_attitude_setpoint_id$'),
-
-    ('mc_rate_control', r'MulticopterRateControl\.cpp$', r'\b_actuators_id=([^,)]+)', r'^_actuators_id$'),
-    ('mc_att_control', r'mc_att_control_main\.cpp$', r'\_attitude_sp_id=([^,)]+)', r'^_attitude_sp_id$'),
-
-    ('fw_att_control', r'FixedwingAttitudeControl\.cpp$', r'\b_actuators_id=([^,)]+)', r'^_actuators_id$'),
-    ('fw_att_control', r'FixedwingAttitudeControl\.cpp$', r'\b_attitude_setpoint_id=([^,)]+)', r'^_attitude_setpoint_id$'),
 
     ('uavcan', r'sensors/.*\.cpp$', r'\bUavcanCDevSensorBridgeBase\([^{]*DEVICE_PATH,([^,)]+)', r'^_orb_topic$'),
     ]
@@ -376,7 +365,7 @@ class Graph(object):
             try:
                 content = f.read()
             except:
-                print('Failed reading file: %s, skipping content.' % path)
+                print('Failed reading file: %s, skipping content.' % file_name)
                 return
 
 
@@ -619,11 +608,13 @@ if args.output == 'json':
 elif args.output == 'graphviz':
     try:
         from graphviz import Digraph
-    except:
-        print("Failed to import graphviz.")
-        print("You may need to install it with 'pip install graphviz'")
+    except ImportError as e:
+        print("Failed to import graphviz: " + e)
         print("")
-        raise
+        print("You may need to install it with:")
+        print("    pip3 install --user graphviz")
+        print("")
+        sys.exit(1)
     output_graphviz = OutputGraphviz(graph)
     engine='fdp' # use neato or fdp
     output_graphviz.write(args.file+'.fv', engine=engine)

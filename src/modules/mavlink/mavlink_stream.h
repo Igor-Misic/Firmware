@@ -93,6 +93,15 @@ public:
 	virtual unsigned get_size() = 0;
 
 	/**
+	 * This function is called in response to a MAV_CMD_REQUEST_MESSAGE command.
+	 */
+	virtual bool request_message(float param2 = 0.0, float param3 = 0.0, float param4 = 0.0,
+				     float param5 = 0.0, float param6 = 0.0, float param7 = 0.0)
+	{
+		return send(hrt_absolute_time());
+	}
+
+	/**
 	 * Get the average message size
 	 *
 	 * For a normal stream this equals the message size,

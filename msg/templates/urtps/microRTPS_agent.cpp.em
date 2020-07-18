@@ -12,7 +12,7 @@
 @###############################################
 @{
 import genmsg.msgs
-import gencpp
+
 from px_generate_uorb_topic_helper import * # this is in Tools/
 from px_generate_uorb_topic_files import MsgScope # this is in Tools/
 
@@ -22,6 +22,7 @@ recv_topics = [(alias[idx] if alias[idx] else s.short_name) for idx, s in enumer
 /****************************************************************************
  *
  * Copyright 2017 Proyectos y Sistemas de Mantenimiento SL (eProsima).
+ * Copyright (c) 2018-2019 PX4 Development Team. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
@@ -69,6 +70,7 @@ recv_topics = [(alias[idx] if alias[idx] else s.short_name) for idx, s in enumer
 #include <fastrtps/Domain.h>
 
 #include "microRTPS_transport.h"
+#include "microRTPS_timesync.h"
 #include "RtpsTopics.h"
 
 #define BUFFER_SIZE 1024
@@ -90,6 +92,9 @@ volatile sig_atomic_t running = 1;
 Transport_node *transport_node = nullptr;
 RtpsTopics topics;
 uint32_t total_sent = 0, sent = 0;
+
+// Init timesync
+std::shared_ptr<TimeSync> timeSync = std::make_shared<TimeSync>();
 
 struct options {
     enum class eTransports
@@ -159,6 +164,7 @@ void signal_handler(int signum)
    printf("Interrupt signal (%d) received.\n", signum);
    running = 0;
    transport_node->close();
+   timeSync->stop();
 }
 
 @[if recv_topics]@
@@ -167,10 +173,10 @@ std::condition_variable t_send_queue_cv;
 std::mutex t_send_queue_mutex;
 std::queue<uint8_t> t_send_queue;
 
-void t_send(void *data)
+void t_send(void*)
 {
     char data_buffer[BUFFER_SIZE] = {};
-    int length = 0;
+    uint32_t length = 0;
 
     while (running && !exit_sender_thread.load())
     {
@@ -183,10 +189,11 @@ void t_send(void *data)
         t_send_queue.pop();
         lk.unlock();
 
-        uint16_t header_length = transport_node->get_header_length();
+        size_t header_length = transport_node->get_header_length();
         /* make room for the header to fill in later */
         eprosima::fastcdr::FastBuffer cdrbuffer(&data_buffer[header_length], sizeof(data_buffer)-header_length);
         eprosima::fastcdr::Cdr scdr(cdrbuffer);
+
         if (topics.getMsg(topic_ID, scdr))
         {
             length = scdr.getSerializedDataLength();
@@ -211,19 +218,22 @@ int main(int argc, char** argv)
     // register signal SIGINT and signal handler
     signal(SIGINT, signal_handler);
 
+    printf("--- MicroRTPS Agent ---\n");
+    printf("- Starting link...\n");
+
     switch (_options.transport)
     {
         case options::eTransports::UART:
         {
             transport_node = new UART_node(_options.device, _options.baudrate, _options.poll_ms);
-            printf("\nUART transport: device: %s; baudrate: %d; sleep: %dus; poll: %dms\n\n",
+            printf("- UART transport: device: %s; baudrate: %d; sleep: %dus; poll: %dms\n",
                    _options.device, _options.baudrate, _options.sleep_us, _options.poll_ms);
         }
         break;
         case options::eTransports::UDP:
         {
             transport_node = new UDP_node(_options.ip, _options.recv_port, _options.send_port);
-            printf("\nUDP transport: ip address: %s; recv port: %u; send port: %u; sleep: %dus\n\n",
+            printf("- UDP transport: ip address: %s; recv port: %u; send port: %u; sleep: %dus\n",
                     _options.ip, _options.recv_port, _options.send_port, _options.sleep_us);
         }
         break;
@@ -249,7 +259,11 @@ int main(int argc, char** argv)
     std::chrono::time_point<std::chrono::steady_clock> start, end;
 @[end if]@
 
+    topics.set_timesync(timeSync);
+
+@[if recv_topics]@
     topics.init(&t_send_queue_cv, &t_send_queue_mutex, &t_send_queue);
+@[end if]@
 
     running = true;
 @[if recv_topics]@
@@ -293,6 +307,8 @@ int main(int argc, char** argv)
 @[end if]@
     delete transport_node;
     transport_node = nullptr;
+
+    timeSync->reset();
 
     return 0;
 }

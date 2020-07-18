@@ -42,9 +42,10 @@ using namespace matrix;
 using namespace time_literals;
 using math::radians;
 
-MulticopterRateControl::MulticopterRateControl() :
+MulticopterRateControl::MulticopterRateControl(bool vtol) :
 	ModuleParams(nullptr),
 	WorkItem(MODULE_NAME, px4::wq_configurations::rate_ctrl),
+	_actuators_0_pub(vtol ? ORB_ID(actuator_controls_virtual_mc) : ORB_ID(actuator_controls_0)),
 	_loop_perf(perf_alloc(PC_ELAPSED, MODULE_NAME": cycle"))
 {
 	_vehicle_status.vehicle_type = vehicle_status_s::VEHICLE_TYPE_ROTARY_WING;
@@ -84,8 +85,6 @@ MulticopterRateControl::parameters_updated()
 	_rate_control.setIntegratorLimit(
 		Vector3f(_param_mc_rr_int_lim.get(), _param_mc_pr_int_lim.get(), _param_mc_yr_int_lim.get()));
 
-	_rate_control.setDTermCutoff(_loop_update_rate_hz, _param_mc_dterm_cutoff.get(), false);
-
 	_rate_control.setFeedForwardGain(
 		Vector3f(_param_mc_rollrate_ff.get(), _param_mc_pitchrate_ff.get(), _param_mc_yawrate_ff.get()));
 
@@ -95,23 +94,6 @@ MulticopterRateControl::parameters_updated()
 				  radians(_param_mc_acro_y_max.get()));
 
 	_actuators_0_circuit_breaker_enabled = circuit_breaker_enabled_by_val(_param_cbrk_rate_ctrl.get(), CBRK_RATE_CTRL_KEY);
-}
-
-void
-MulticopterRateControl::vehicle_status_poll()
-{
-	/* check if there is new status information */
-	if (_vehicle_status_sub.update(&_vehicle_status)) {
-		/* set correct uORB ID, depending on if vehicle is VTOL or not */
-		if (_actuators_id == nullptr) {
-			if (_vehicle_status.is_vtol) {
-				_actuators_id = ORB_ID(actuator_controls_virtual_mc);
-
-			} else {
-				_actuators_id = ORB_ID(actuator_controls_0);
-			}
-		}
-	}
 }
 
 float
@@ -127,10 +109,10 @@ MulticopterRateControl::get_landing_gear_state()
 
 	float landing_gear = landing_gear_s::GEAR_DOWN; // default to down
 
-	if (_manual_control_sp.gear_switch == manual_control_setpoint_s::SWITCH_POS_ON && _gear_state_initialized) {
+	if (_manual_control_setpoint.gear_switch == manual_control_setpoint_s::SWITCH_POS_ON && _gear_state_initialized) {
 		landing_gear = landing_gear_s::GEAR_UP;
 
-	} else if (_manual_control_sp.gear_switch == manual_control_setpoint_s::SWITCH_POS_OFF) {
+	} else if (_manual_control_setpoint.gear_switch == manual_control_setpoint_s::SWITCH_POS_OFF) {
 		// Switching the gear off does put it into a safe defined state
 		_gear_state_initialized = true;
 	}
@@ -163,12 +145,18 @@ MulticopterRateControl::Run()
 	vehicle_angular_velocity_s angular_velocity;
 
 	if (_vehicle_angular_velocity_sub.update(&angular_velocity)) {
+
+		// grab corresponding vehicle_angular_acceleration immediately after vehicle_angular_velocity copy
+		vehicle_angular_acceleration_s v_angular_acceleration{};
+		_vehicle_angular_acceleration_sub.copy(&v_angular_acceleration);
+
 		const hrt_abstime now = hrt_absolute_time();
 
 		// Guard against too small (< 0.2ms) and too large (> 20ms) dt's.
 		const float dt = math::constrain(((now - _last_run) / 1e6f), 0.0002f, 0.02f);
 		_last_run = now;
 
+		const Vector3f angular_accel{v_angular_acceleration.xyz};
 		const Vector3f rates{angular_velocity.xyz};
 
 		/* check for updates in other topics */
@@ -183,9 +171,9 @@ MulticopterRateControl::Run()
 			}
 		}
 
-		vehicle_status_poll();
+		_vehicle_status_sub.update(&_vehicle_status);
 
-		const bool manual_control_updated = _manual_control_sp_sub.update(&_manual_control_sp);
+		const bool manual_control_updated = _manual_control_setpoint_sub.update(&_manual_control_setpoint);
 
 		// generate the rate setpoint from sticks?
 		bool manual_rate_sp = false;
@@ -211,8 +199,8 @@ MulticopterRateControl::Run()
 			//  if true then use published rate setpoint, otherwise generate from manual_control_setpoint (like acro)
 			if (_v_control_mode.flag_control_rattitude_enabled) {
 				manual_rate_sp =
-					(fabsf(_manual_control_sp.y) > _param_mc_ratt_th.get()) ||
-					(fabsf(_manual_control_sp.x) > _param_mc_ratt_th.get());
+					(fabsf(_manual_control_setpoint.y) > _param_mc_ratt_th.get()) ||
+					(fabsf(_manual_control_setpoint.x) > _param_mc_ratt_th.get());
 			}
 
 		} else {
@@ -224,12 +212,12 @@ MulticopterRateControl::Run()
 
 				// manual rates control - ACRO mode
 				const Vector3f man_rate_sp{
-					math::superexpo(_manual_control_sp.y, _param_mc_acro_expo.get(), _param_mc_acro_supexpo.get()),
-					math::superexpo(-_manual_control_sp.x, _param_mc_acro_expo.get(), _param_mc_acro_supexpo.get()),
-					math::superexpo(_manual_control_sp.r, _param_mc_acro_expo_y.get(), _param_mc_acro_supexpoy.get())};
+					math::superexpo(_manual_control_setpoint.y, _param_mc_acro_expo.get(), _param_mc_acro_supexpo.get()),
+					math::superexpo(-_manual_control_setpoint.x, _param_mc_acro_expo.get(), _param_mc_acro_supexpo.get()),
+					math::superexpo(_manual_control_setpoint.r, _param_mc_acro_expo_y.get(), _param_mc_acro_supexpoy.get())};
 
 				_rates_sp = man_rate_sp.emult(_acro_rate_max);
-				_thrust_sp = _manual_control_sp.z;
+				_thrust_sp = _manual_control_setpoint.z;
 
 				// publish rate setpoint
 				vehicle_rates_setpoint_s v_rates_sp{};
@@ -256,20 +244,6 @@ MulticopterRateControl::Run()
 			}
 		}
 
-		// calculate loop update rate while disarmed or at least a few times (updating the filter is expensive)
-		if (!_v_control_mode.flag_armed || (now - _task_start) < 3300000) {
-			_dt_accumulator += dt;
-			++_loop_counter;
-
-			if (_dt_accumulator > 1.0f) {
-				const float loop_update_rate = (float)_loop_counter / _dt_accumulator;
-				_loop_update_rate_hz = _loop_update_rate_hz * 0.5f + loop_update_rate * 0.5f;
-				_dt_accumulator = 0;
-				_loop_counter = 0;
-				_rate_control.setDTermCutoff(_loop_update_rate_hz, _param_mc_dterm_cutoff.get(), true);
-			}
-		}
-
 		// run the rate controller
 		if (_v_control_mode.flag_control_rates_enabled && !_actuators_0_circuit_breaker_enabled) {
 
@@ -291,7 +265,7 @@ MulticopterRateControl::Run()
 			}
 
 			// run rate controller
-			const Vector3f att_control = _rate_control.update(rates, _rates_sp, dt, _maybe_landed || _landed);
+			const Vector3f att_control = _rate_control.update(rates, _rates_sp, angular_accel, dt, _maybe_landed || _landed);
 
 			// publish rate controller status
 			rate_ctrl_status_s rate_ctrl_status{};
@@ -326,14 +300,14 @@ MulticopterRateControl::Run()
 			}
 
 			actuators.timestamp = hrt_absolute_time();
-			orb_publish_auto(_actuators_id, &_actuators_0_pub, &actuators, nullptr, ORB_PRIO_DEFAULT);
+			_actuators_0_pub.publish(actuators);
 
 		} else if (_v_control_mode.flag_control_termination_enabled) {
 			if (!_vehicle_status.is_vtol) {
 				// publish actuator controls
 				actuator_controls_s actuators{};
 				actuators.timestamp = hrt_absolute_time();
-				orb_publish_auto(_actuators_id, &_actuators_0_pub, &actuators, nullptr, ORB_PRIO_DEFAULT);
+				_actuators_0_pub.publish(actuators);
 			}
 		}
 	}
@@ -343,7 +317,15 @@ MulticopterRateControl::Run()
 
 int MulticopterRateControl::task_spawn(int argc, char *argv[])
 {
-	MulticopterRateControl *instance = new MulticopterRateControl();
+	bool vtol = false;
+
+	if (argc > 1) {
+		if (strcmp(argv[1], "vtol") == 0) {
+			vtol = true;
+		}
+	}
+
+	MulticopterRateControl *instance = new MulticopterRateControl(vtol);
 
 	if (instance) {
 		_object.store(instance);
@@ -362,15 +344,6 @@ int MulticopterRateControl::task_spawn(int argc, char *argv[])
 	_task_id = -1;
 
 	return PX4_ERROR;
-}
-
-int MulticopterRateControl::print_status()
-{
-	PX4_INFO("Running");
-
-	perf_print_counter(_loop_perf);
-
-	return 0;
 }
 
 int MulticopterRateControl::custom_command(int argc, char *argv[])
@@ -394,19 +367,15 @@ The controller has a PID loop for angular rate error.
 
 )DESCR_STR");
 
-	PRINT_MODULE_USAGE_NAME(MODULE_NAME, "controller");
+	PRINT_MODULE_USAGE_NAME("mc_rate_control", "controller");
 	PRINT_MODULE_USAGE_COMMAND("start");
+	PRINT_MODULE_USAGE_ARG("vtol", "VTOL mode", true);
 	PRINT_MODULE_USAGE_DEFAULT_COMMANDS();
 
 	return 0;
 }
 
-/**
- * Multicopter rate control app start / stop handling function
- */
-extern "C" __EXPORT int mc_rate_control_main(int argc, char *argv[]);
-
-int mc_rate_control_main(int argc, char *argv[])
+extern "C" __EXPORT int mc_rate_control_main(int argc, char *argv[])
 {
 	return MulticopterRateControl::main(argc, argv);
 }

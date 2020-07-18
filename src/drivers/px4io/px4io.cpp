@@ -35,7 +35,7 @@
  * @file px4io.cpp
  * Driver for the PX4IO board.
  *
- * PX4IO is connected via I2C or DMA enabled high-speed UART.
+ * PX4IO is connected via DMA enabled high-speed UART.
  */
 
 #include <px4_platform_common/px4_config.h>
@@ -58,7 +58,7 @@
 #include <math.h>
 #include <crc32.h>
 
-#include <arch/board/board.h>
+
 
 #include <drivers/device/device.h>
 #include <drivers/drv_rc_input.h>
@@ -80,7 +80,7 @@
 
 #include <uORB/Publication.hpp>
 #include <uORB/PublicationMulti.hpp>
-#include <uORB/PublicationQueued.hpp>
+#include <uORB/Publication.hpp>
 #include <uORB/Subscription.hpp>
 #include <uORB/topics/actuator_controls.h>
 #include <uORB/topics/actuator_outputs.h>
@@ -275,6 +275,8 @@ private:
 	uORB::Publication<servorail_status_s>			_to_servorail{ORB_ID(servorail_status)};
 	uORB::Publication<safety_s>				_to_safety{ORB_ID(safety)};
 
+	safety_s _safety{};
+
 	bool			_primary_pwm_device;	///< true if we are the default PWM output
 	bool			_lockdown_override;	///< allow to override the safety lockdown
 	bool			_armed;			///< wether the system is armed
@@ -303,7 +305,7 @@ private:
 	/**
 	 * Trampoline to the worker task
 	 */
-	static void		task_main_trampoline(int argc, char *argv[]);
+	static int		task_main_trampoline(int argc, char *argv[]);
 
 	/**
 	 * worker task
@@ -785,6 +787,7 @@ PX4IO::init()
 		/* send command to arm system via command API */
 		vcmd.timestamp = hrt_absolute_time();
 		vcmd.param1 = 1.0f; /* request arming */
+		vcmd.param3 = 1234.f; /* mark the command coming from IO (for in-air restoring) */
 		vcmd.command = vehicle_command_s::VEHICLE_CMD_COMPONENT_ARM_DISARM;
 
 		/* send command once */
@@ -881,7 +884,7 @@ PX4IO::init()
 				   SCHED_DEFAULT,
 				   SCHED_PRIORITY_ACTUATOR_OUTPUTS,
 				   1500,
-				   (main_t)&PX4IO::task_main_trampoline,
+				   (px4_main_t)&PX4IO::task_main_trampoline,
 				   nullptr);
 
 	if (_task < 0) {
@@ -892,10 +895,11 @@ PX4IO::init()
 	return OK;
 }
 
-void
+int
 PX4IO::task_main_trampoline(int argc, char *argv[])
 {
 	g_dev->task_main();
+	return 0;
 }
 
 void
@@ -1306,9 +1310,9 @@ PX4IO::io_set_control_state(unsigned group)
 		controls.control[3] = 1.0f;
 	}
 
-	uint16_t regs[_max_actuators];
+	uint16_t regs[sizeof(controls.control) / sizeof(controls.control[0])] = {};
 
-	for (unsigned i = 0; i < _max_controls; i++) {
+	for (unsigned i = 0; (i < _max_controls) && (i < sizeof(controls.control) / sizeof(controls.control[0])); i++) {
 		/* ensure FLOAT_TO_REG does not produce an integer overflow */
 		const float ctrl = math::constrain(controls.control[i], -1.0f, 1.0f);
 
@@ -1319,12 +1323,12 @@ PX4IO::io_set_control_state(unsigned group)
 			regs[i] = FLOAT_TO_REG(ctrl);
 		}
 
-
 	}
 
 	if (!_test_fmu_fail && !_motor_test.in_test_mode) {
 		/* copy values to registers in IO */
-		return io_reg_set(PX4IO_PAGE_CONTROLS, group * PX4IO_PROTOCOL_MAX_CONTROL_COUNT, regs, _max_controls);
+		return io_reg_set(PX4IO_PAGE_CONTROLS, group * PX4IO_PROTOCOL_MAX_CONTROL_COUNT, regs, math::min(_max_controls,
+				  sizeof(controls.control) / sizeof(controls.control[0])));
 
 	} else {
 		return OK;
@@ -1689,14 +1693,23 @@ PX4IO::io_handle_status(uint16_t status)
 	/**
 	 * Get and handle the safety status
 	 */
-	safety_s safety{};
-	safety.timestamp = hrt_absolute_time();
-	safety.safety_switch_available = true;
-	safety.safety_off = (status & PX4IO_P_STATUS_FLAGS_SAFETY_OFF) ? true : false;
-	safety.override_available = _override_available;
-	safety.override_enabled = (status & PX4IO_P_STATUS_FLAGS_OVERRIDE) ? true : false;
+	const bool safety_off = status & PX4IO_P_STATUS_FLAGS_SAFETY_OFF;
+	const bool override_enabled = status & PX4IO_P_STATUS_FLAGS_OVERRIDE;
 
-	_to_safety.publish(safety);
+	// publish immediately on change, otherwise at 1 Hz
+	if ((hrt_elapsed_time(&_safety.timestamp) >= 1_s)
+	    || (_safety.safety_off != safety_off)
+	    || (_safety.override_available != _override_available)
+	    || (_safety.override_enabled != override_enabled)) {
+
+		_safety.safety_switch_available = true;
+		_safety.safety_off = safety_off;
+		_safety.override_available = _override_available;
+		_safety.override_enabled = override_enabled;
+		_safety.timestamp = hrt_absolute_time();
+
+		_to_safety.publish(_safety);
+	}
 
 	return ret;
 }
@@ -2051,7 +2064,7 @@ PX4IO::io_reg_modify(uint8_t page, uint8_t offset, uint16_t clearbits, uint16_t 
 int
 PX4IO::print_debug()
 {
-#ifdef CONFIG_ARCH_BOARD_PX4_FMU_V2
+#if defined(CONFIG_ARCH_BOARD_PX4_FMU_V2) || defined(CONFIG_ARCH_BOARD_PX4_FMU_V3) ||  defined(CONFIG_ARCH_BOARD_HEX_CUBE_ORANGE)
 	int io_fd = -1;
 
 	if (io_fd <= 0) {
@@ -2198,7 +2211,7 @@ PX4IO::mixer_send(const char *buf, unsigned buflen, unsigned retries)
 	} while (retries > 0);
 
 	if (retries == 0) {
-		mavlink_and_console_log_info(&_mavlink_log_pub, "[IO] mixer upload fail");
+		mavlink_log_info(&_mavlink_log_pub, "[IO] mixer upload fail");
 		/* load must have failed for some reason */
 		return -EINVAL;
 
@@ -3012,8 +3025,8 @@ start(int argc, char *argv[])
 		} else if (!strcmp(argv[extra_args], "hil")) {
 			hitl_mode = true;
 
-		} else {
-			warnx("unknown argument: %s", argv[1]);
+		} else if (argv[extra_args][0] != '\0') {
+			PX4_WARN("unknown argument: %s", argv[extra_args]);
 		}
 	}
 

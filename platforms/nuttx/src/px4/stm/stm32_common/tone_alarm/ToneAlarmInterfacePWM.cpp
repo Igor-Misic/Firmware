@@ -34,7 +34,7 @@
 #include <drivers/device/device.h>
 #include <drivers/drv_tone_alarm.h>
 #include <px4_platform_common/defines.h>
-#include <cmath>
+#include <math.h>
 
 /* Check that tone alarm and HRT timers are different */
 #if defined(TONE_ALARM_TIMER) && defined(HRT_TIMER)
@@ -48,6 +48,24 @@
 #define TONE_ALARM_COUNTER_PERIOD 65536
 #endif
 
+/* The H7 has a 2 RCC_APB1ENR registers RCC_APB1LENR and RCC_APB1HENR
+ * We simply map the RCC_APB1LENR back to STM32_RCC_APB1ENR as well as
+ * the bits
+ */
+
+#if !defined(STM32_RCC_APB1ENR) && defined(STM32_RCC_APB1LENR)
+# define STM32_RCC_APB1ENR STM32_RCC_APB1LENR
+
+# define RCC_APB1ENR_TIM2EN  RCC_APB1LENR_TIM2EN
+# define RCC_APB1ENR_TIM3EN  RCC_APB1LENR_TIM3EN
+# define RCC_APB1ENR_TIM4EN  RCC_APB1LENR_TIM4EN
+# define RCC_APB1ENR_TIM5EN  RCC_APB1LENR_TIM5EN
+# define RCC_APB1ENR_TIM6EN  RCC_APB1LENR_TIM6EN
+# define RCC_APB1ENR_TIM7EN  RCC_APB1LENR_TIM7EN
+# define RCC_APB1ENR_TIM12EN RCC_APB1LENR_TIM12EN
+# define RCC_APB1ENR_TIM13EN RCC_APB1LENR_TIM13EN
+# define RCC_APB1ENR_TIM14EN RCC_APB1LENR_TIM14EN
+#endif
 /* Tone alarm configuration */
 #if   TONE_ALARM_TIMER == 1
 # define TONE_ALARM_BASE                STM32_TIM1_BASE
@@ -288,7 +306,7 @@ void start_note(unsigned frequency)
 	float signal_period = (1.0f / frequency) * 0.5f;
 
 	// Calculate the hardware clock divisor rounded to the nearest integer.
-	unsigned int divisor = std::round(signal_period * TONE_ALARM_CLOCK);
+	unsigned int divisor = roundf(signal_period * TONE_ALARM_CLOCK);
 
 	// Pick the lowest prescaler value that we can use.
 	// (Note that the effective prescale value is 1 greater.)

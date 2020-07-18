@@ -37,13 +37,13 @@
 #include <lib/drivers/gyroscope/PX4Gyroscope.hpp>
 #include <lib/ecl/geo/geo.h>
 #include <px4_platform_common/getopt.h>
-#include <px4_platform_common/px4_work_queue/ScheduledWorkItem.hpp>
+#include <px4_platform_common/i2c_spi_buses.h>
 #include <lib/systemlib/conversions.h>
 #include <lib/systemlib/px4_macros.h>
 
 #include "MPU9250_mag.h"
 
-#if defined(PX4_I2C_OBDEV_MPU9250) || defined(PX4_I2C_BUS_EXPANSION)
+#if defined(PX4_I2C_OBDEV_MPU9250)
 #  define USE_I2C
 #endif
 
@@ -185,15 +185,22 @@
  * interrupt status.
  */
 struct MPUReport {
-	uint8_t		cmd;
-	uint8_t		status;
-	uint8_t		accel_x[2];
-	uint8_t		accel_y[2];
-	uint8_t		accel_z[2];
-	uint8_t		temp[2];
-	uint8_t		gyro_x[2];
-	uint8_t		gyro_y[2];
-	uint8_t		gyro_z[2];
+	uint8_t cmd;
+	uint8_t ACCEL_XOUT_H;
+	uint8_t ACCEL_XOUT_L;
+	uint8_t ACCEL_YOUT_H;
+	uint8_t ACCEL_YOUT_L;
+	uint8_t ACCEL_ZOUT_H;
+	uint8_t ACCEL_ZOUT_L;
+	uint8_t TEMP_OUT_H;
+	uint8_t TEMP_OUT_L;
+	uint8_t GYRO_XOUT_H;
+	uint8_t GYRO_XOUT_L;
+	uint8_t GYRO_YOUT_H;
+	uint8_t GYRO_YOUT_L;
+	uint8_t GYRO_ZOUT_H;
+	uint8_t GYRO_ZOUT_L;
+
 	struct ak8963_regs mag;
 };
 #pragma pack(pop)
@@ -207,45 +214,49 @@ struct MPUReport {
  */
 #define MPU9250_LOW_BUS_SPEED				0
 #define MPU9250_HIGH_BUS_SPEED				0x8000
-#define MPU9250_REG_MASK					0x00FF
+#define MPU9250_REG_MASK				0x00FF
 #  define MPU9250_IS_HIGH_SPEED(r) 			((r) & MPU9250_HIGH_BUS_SPEED)
 #  define MPU9250_REG(r) 					((r) & MPU9250_REG_MASK)
 #  define MPU9250_SET_SPEED(r, s) 			((r)|(s))
 #  define MPU9250_HIGH_SPEED_OP(r) 			MPU9250_SET_SPEED((r), MPU9250_HIGH_BUS_SPEED)
 #  define MPU9250_LOW_SPEED_OP(r)			((r) &~MPU9250_HIGH_BUS_SPEED)
 
-/* interface factories */
-extern device::Device *MPU9250_SPI_interface(int bus, uint32_t cs);
-extern device::Device *MPU9250_I2C_interface(int bus, uint32_t address);
-extern int MPU9250_probe(device::Device *dev);
+static constexpr int16_t combine(uint8_t msb, uint8_t lsb) { return (msb << 8u) | lsb; }
 
-typedef device::Device *(*MPU9250_constructor)(int, uint32_t);
+/* interface factories */
+extern device::Device *MPU9250_SPI_interface(int bus, uint32_t cs, int bus_frequency, spi_mode_e spi_mode);
+extern device::Device *MPU9250_I2C_interface(int bus, uint32_t address, int bus_frequency);
 
 class MPU9250_mag;
 
-class MPU9250 : public px4::ScheduledWorkItem
+class MPU9250 : public I2CSPIDriver<MPU9250>
 {
 public:
-	MPU9250(device::Device *interface, device::Device *mag_interface, enum Rotation rotation);
+	MPU9250(device::Device *interface, device::Device *mag_interface, enum Rotation rotation, I2CSPIBusOption bus_option,
+		int bus);
 	virtual ~MPU9250();
 
-	virtual int		init();
+	static I2CSPIDriverBase *instantiate(const BusCLIArguments &cli, const BusInstanceIterator &iterator,
+					     int runtime_instance);
+	static void print_usage();
+
+	int		init();
 	uint8_t			get_whoami() { return _whoami; }
 
 	/**
 	 * Diagnostics - print some basic information about the driver.
 	 */
-	void			print_info();
+	void			print_status() override;
+
+	void RunImpl();
 
 protected:
 	device::Device *_interface;
 	uint8_t			_whoami{0};	/** whoami result */
 
-	virtual int		probe();
+	int		probe();
 
 	friend class MPU9250_mag;
-
-	void Run() override;
 
 private:
 
@@ -261,9 +272,7 @@ private:
 	unsigned		_sample_rate{1000};
 
 	perf_counter_t		_sample_perf;
-	perf_counter_t		_bad_transfers;
 	perf_counter_t		_bad_registers;
-	perf_counter_t		_good_transfers;
 	perf_counter_t		_duplicates;
 
 	uint8_t			_register_wait{0};
@@ -279,7 +288,6 @@ private:
 	const uint16_t			*_checked_registers{nullptr};
 
 	uint8_t					_checked_values[MPU9250_NUM_CHECKED_REGISTERS] {};
-	uint8_t					_checked_bad[MPU9250_NUM_CHECKED_REGISTERS] {};
 	unsigned				_checked_next{0};
 	unsigned				_num_checked_registers{0};
 
@@ -287,7 +295,6 @@ private:
 	// last temperature reading for print_info()
 	float			_last_temperature{0.0f};
 
-	bool check_null_data(uint16_t *data, uint8_t size);
 	bool check_duplicate(uint8_t *accel_data);
 
 	// keep last accel reading for duplicate detection
@@ -295,7 +302,6 @@ private:
 	bool			_got_duplicate{false};
 
 	void			start();
-	void			stop();
 	int			reset();
 
 	/**
@@ -316,8 +322,6 @@ private:
 	 * @return		The value that was read.
 	 */
 	uint8_t			read_reg(unsigned reg, uint32_t speed = MPU9250_LOW_BUS_SPEED);
-	uint16_t		read_reg16(unsigned reg);
-
 
 	/**
 	 * Read a register range from the mpu

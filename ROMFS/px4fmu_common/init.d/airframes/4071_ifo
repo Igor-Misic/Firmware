@@ -10,14 +10,15 @@
 # @output MAIN3 motor 3
 # @output MAIN4 motor 4
 #
+# @maintainer Hyon Lim <lim@uvify.com>
+#
 # @board px4_fmu-v2 exclude
 # @board px4_fmu-v3 exclude
 # @board px4_fmu-v4pro exclude
 # @board px4_fmu-v5 exclude
 # @board px4_fmu-v5x exclude
 # @board intel_aerofc-v1 exclude
-#
-# @maintainer Hyon Lim <lim@uvify.com>
+# @board bitcraze_crazyflie exclude
 #
 
 set VEHICLE_TYPE mc
@@ -60,7 +61,7 @@ then
 	param set RC_FLT_CUTOFF 0.00000
 
 	# Filter settings
-	param set MC_DTERM_CUTOFF 90.00000
+	param set IMU_DGYRO_CUTOFF 90.00000
 	param set IMU_GYRO_CUTOFF 100.00000
 
 	# Thrust curve (avoids the need for TPA)
@@ -80,18 +81,17 @@ then
 
 	# Position control
 	param set MPC_Z_P 1.00000
-	param set MPC_Z_VEL_P 0.20000
-	param set MPC_Z_VEL_I 0.02000
-	param set MPC_Z_VEL_D 0.00000
+	param set MPC_Z_VEL_P_ACC 4
+	param set MPC_Z_VEL_I_ACC 0.4
 
 	param set MPC_THR_MIN 0.06000
 	param set MPC_THR_HOVER 0.3000
 
 	param set MIS_TAKEOFF_ALT 1.1000
 	param set MPC_XY_P 1.7000
-	param set MPC_XY_VEL_P 0.1300
-	param set MPC_XY_VEL_I 0.0600
-	param set MPC_XY_VEL_D 0.0100
+	param set MPC_XY_VEL_P_ACC 2.6
+	param set MPC_XY_VEL_I_ACC 1.2
+	param set MPC_XY_VEL_D_ACC 0.2
 	param set MPC_TKO_RAMP_T 1.0000
 	param set MPC_TKO_SPEED 1.1000
 	param set MPC_VEL_MANUAL 3.0000
@@ -106,7 +106,7 @@ then
 
 	# Filter settings
 	param set IMU_GYRO_CUTOFF 90.00000
-	param set MC_DTERM_CUTOFF 70.00000
+	param set IMU_DGYRO_CUTOFF 70.00000
 
 	# Don't try to be intelligent on RC loss: just cut the motors
 	param set NAV_RCL_ACT 6
@@ -116,6 +116,7 @@ then
 
 	# TELEM1 ttyS1 - Wifi module
 	param set MAV_0_CONFIG 101
+	param set MAV_0_RATE 0
 	param set MAV_0_MODE 2	# onboard
 	param set SER_TEL1_BAUD 921600
 

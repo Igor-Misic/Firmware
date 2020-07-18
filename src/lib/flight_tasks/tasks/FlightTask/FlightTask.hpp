@@ -52,7 +52,16 @@
 #include <uORB/topics/vehicle_constraints.h>
 #include <uORB/topics/vehicle_attitude.h>
 #include <uORB/topics/vehicle_trajectory_waypoint.h>
+#include <uORB/topics/home_position.h>
 #include <lib/weather_vane/WeatherVane.hpp>
+
+struct ekf_reset_counters_s {
+	uint8_t xy;
+	uint8_t vxy;
+	uint8_t z;
+	uint8_t vz;
+	uint8_t quat;
+};
 
 class FlightTask : public ModuleParams
 {
@@ -68,7 +77,7 @@ public:
 
 	/**
 	 * Call once on the event where you switch to the task
-	 * @param state of the previous task
+	 * @param last_setpoint last output of the previous task
 	 * @return true on success, false on error
 	 */
 	virtual bool activate(vehicle_local_position_setpoint_s last_setpoint);
@@ -96,7 +105,7 @@ public:
 	 * To be called regularly in the control loop cycle to execute the task
 	 * @return true on success, false on error
 	 */
-	virtual bool update() = 0;
+	virtual bool update();
 
 	/**
 	 * Call after update()
@@ -111,6 +120,9 @@ public:
 	 * @return task output setpoints that get executed by the positon controller
 	 */
 	const vehicle_local_position_setpoint_s getPositionSetpoint();
+
+	const ekf_reset_counters_s getResetCounters() const { return _reset_counters; }
+	void setResetCounters(const ekf_reset_counters_s &counters) { _reset_counters = counters; }
 
 	/**
 	 * Get vehicle constraints.
@@ -138,6 +150,11 @@ public:
 	 */
 	static const vehicle_local_position_setpoint_s empty_setpoint;
 
+	/**.
+	 * All counters are set to 0.
+	 */
+	static const ekf_reset_counters_s zero_reset_counters;
+
 	/**
 	 * Empty constraints.
 	 * All constraints are set to NAN.
@@ -164,18 +181,24 @@ public:
 	virtual void setYawHandler(WeatherVane *ext_yaw_handler) {}
 
 	void updateVelocityControllerIO(const matrix::Vector3f &vel_sp,
-					const matrix::Vector3f &thrust_sp) {_velocity_setpoint_feedback = vel_sp; _thrust_setpoint_feedback = thrust_sp; }
+					const matrix::Vector3f &acc_sp)
+	{
+		_velocity_setpoint_feedback = vel_sp;
+		_acceleration_setpoint_feedback = acc_sp;
+	}
 
 protected:
-
-	uORB::SubscriptionData<vehicle_local_position_s>	_sub_vehicle_local_position{ORB_ID(vehicle_local_position)};
-	uORB::SubscriptionData<vehicle_attitude_s>		_sub_attitude{ORB_ID(vehicle_attitude)};
+	uORB::SubscriptionData<vehicle_local_position_s> _sub_vehicle_local_position{ORB_ID(vehicle_local_position)};
+	uORB::SubscriptionData<vehicle_attitude_s> _sub_attitude{ORB_ID(vehicle_attitude)};
+	uORB::SubscriptionData<home_position_s> _sub_home_position{ORB_ID(home_position)};
 
 	/** Reset all setpoints to NAN */
 	void _resetSetpoints();
 
 	/** Check and update local position */
 	void _evaluateVehicleLocalPosition();
+
+	void _evaluateDistanceToGround();
 
 	/** Set constraints to default values */
 	virtual void _setDefaultConstraints();
@@ -186,8 +209,8 @@ protected:
 	/**
 	 * Monitor the EKF reset counters and
 	 * call the appropriate handling functions in case of a reset event
+	 * TODO: add the delta values to all the handlers
 	 */
-	void _initEkfResetCounters();
 	void _checkEkfResetCounters();
 	virtual void _ekfResetHandlerPositionXY() {};
 	virtual void _ekfResetHandlerVelocityXY() {};
@@ -197,17 +220,18 @@ protected:
 
 	/* Time abstraction */
 	static constexpr uint64_t _timeout = 500000; /**< maximal time in us before a loop or data times out */
-	float _time = 0; /**< passed time in seconds since the task was activated */
-	float _deltatime = 0; /**< passed time in seconds since the task was last updated */
-	hrt_abstime _time_stamp_activate = 0; /**< time stamp when task was activated */
-	hrt_abstime _time_stamp_current = 0; /**< time stamp at the beginning of the current task update */
-	hrt_abstime _time_stamp_last = 0; /**< time stamp when task was last updated */
+	float _time{}; /**< passed time in seconds since the task was activated */
+	float _deltatime{}; /**< passed time in seconds since the task was last updated */
+	hrt_abstime _time_stamp_activate{}; /**< time stamp when task was activated */
+	hrt_abstime _time_stamp_current{}; /**< time stamp at the beginning of the current task update */
+	hrt_abstime _time_stamp_last{}; /**< time stamp when task was last updated */
 
 	/* Current vehicle state */
 	matrix::Vector3f _position; /**< current vehicle position */
 	matrix::Vector3f _velocity; /**< current vehicle velocity */
-	float _yaw = 0.f; /**< current vehicle yaw heading */
-	float _dist_to_bottom = 0.0f; /**< current height above ground level */
+	float _yaw{}; /**< current vehicle yaw heading */
+	float _dist_to_bottom{}; /**< current height above ground level */
+	float _dist_to_ground{}; /**< equals _dist_to_bottom if valid, height above home otherwise */
 
 	/**
 	 * Setpoints which the position controller has to execute.
@@ -221,21 +245,12 @@ protected:
 	matrix::Vector3f _velocity_setpoint;
 	matrix::Vector3f _acceleration_setpoint;
 	matrix::Vector3f _jerk_setpoint;
-	matrix::Vector3f _thrust_setpoint;
-	float _yaw_setpoint;
-	float _yawspeed_setpoint;
-
+	float _yaw_setpoint{};
+	float _yawspeed_setpoint{};
 	matrix::Vector3f _velocity_setpoint_feedback;
-	matrix::Vector3f _thrust_setpoint_feedback;
+	matrix::Vector3f _acceleration_setpoint_feedback;
 
-	/* Counters for estimator local position resets */
-	struct {
-		uint8_t xy = 0;
-		uint8_t vxy = 0;
-		uint8_t z = 0;
-		uint8_t vz = 0;
-		uint8_t quat = 0;
-	} _reset_counters;
+	ekf_reset_counters_s _reset_counters{}; ///< Counters for estimator local position resets
 
 	/**
 	 * Vehicle constraints.
@@ -254,7 +269,6 @@ protected:
 	DEFINE_PARAMETERS_CUSTOM_PARENT(ModuleParams,
 					(ParamFloat<px4::params::MPC_XY_VEL_MAX>) _param_mpc_xy_vel_max,
 					(ParamFloat<px4::params::MPC_Z_VEL_MAX_DN>) _param_mpc_z_vel_max_dn,
-					(ParamFloat<px4::params::MPC_Z_VEL_MAX_UP>) _param_mpc_z_vel_max_up,
-					(ParamFloat<px4::params::MPC_TILTMAX_AIR>) _param_mpc_tiltmax_air
+					(ParamFloat<px4::params::MPC_Z_VEL_MAX_UP>) _param_mpc_z_vel_max_up
 				       )
 };
